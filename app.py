@@ -166,16 +166,75 @@ elif page == "📝 登記每月消費":
                 save_data(spending_df, SPENDING_FILE)
                 st.rerun()
                 
-        # 快速切換繳款狀態區塊
+        # --- 快速切換繳款狀態區塊 (升級版：含到期日標記) ---
         st.divider()
-        st.subheader("💡 快速標記繳款狀態")
+        st.subheader("💡 快速標記繳款狀態與到期提醒")
+        
         spending_df["Ref已繳款"] = spending_df["已繳款"].astype(bool)
         unpaid_list = spending_df[spending_df["Ref已繳款"] == False]
+        
         if not unpaid_list.empty:
+            # 引入 calendar 處理大小月的最後一天，並取得今天日期
+            import calendar
+            today = datetime.now()
+            
             for index, row in unpaid_list.iterrows():
+                # 1. 取得該卡片的設定繳款日
+                bank = row['銀行名稱']
+                card_info = cards_df[cards_df["銀行名稱"] == bank]
+                due_day = card_info["繳款日"].values[0] if not card_info.empty else 15
+                
+                # 2. 計算實際繳款期限 (預設消費月份的「下個月」為繳款月)
+                bill_year = row['年份']
+                bill_month = row['月份']
+                
+                if bill_month == 12:
+                    due_year = bill_year + 1
+                    due_month = 1
+                else:
+                    due_year = bill_year
+                    due_month = bill_month + 1
+                    
+                try:
+                    # 防呆：確保繳款日不會超過該月的最後一天 (例如設定 31 號，但 4 月只有 30 天)
+                    max_day_of_month = calendar.monthrange(due_year, due_month)[1]
+                    actual_due_day = min(due_day, max_day_of_month)
+                    
+                    # 建立繳款到期日的 datetime 物件，並計算倒數天數
+                    due_date = datetime(due_year, due_month, actual_due_day)
+                    days_left = (due_date - today).days
+                    
+                    # 3. 判斷緊急程度，設定視覺標籤與顏色
+                    if days_left < 0:
+                        status_emoji = "🚨"
+                        status_text = f"【已逾期 {abs(days_left)} 天】"
+                        text_color = "#FF4B4B"  # Streamlit 紅色
+                    elif 0 <= days_left <= 7:
+                        status_emoji = "⚠️"
+                        status_text = f"【即將到期：剩 {days_left} 天】"
+                        text_color = "#FFA500"  # 橘色
+                    else:
+                        status_emoji = "✅"
+                        status_text = f" (距離繳款還有 {days_left} 天)"
+                        text_color = "#00CC66"  # 綠色
+                        
+                except Exception:
+                    # 若日期計算發生非預期錯誤的備用方案
+                    status_emoji = "📅"
+                    status_text = f" (建議繳款日: {due_day}日)"
+                    text_color = "gray"
+
+                # 4. 渲染 UI
                 col_info, col_btn = st.columns([4, 1])
                 with col_info:
-                    st.write(f"**{row['銀行名稱']}** - {row['年份']}/{row['月份']} (金額: ${row['消費總額']:,})")
+                    # 使用 HTML 來渲染文字顏色
+                    display_html = f"""
+                    <div style="padding-top: 5px; font-size: 16px;">
+                        {status_emoji} <b>{bank}</b> - {row['年份']} / {row['月份']} (金額: <b>${row['消費總額']:,}</b>) 
+                        <span style="color: {text_color}; font-weight: bold;">{status_text}</span>
+                    </div>
+                    """
+                    st.markdown(display_html, unsafe_allow_html=True)
                 with col_btn:
                     if st.button("標記已繳", key=f"pay_{index}"):
                         spending_df.at[index, "已繳款"] = True
@@ -184,7 +243,7 @@ elif page == "📝 登記每月消費":
                         save_data(spending_df, SPENDING_FILE)
                         st.rerun()
         else:
-            st.write("目前沒有待繳帳單。")
+            st.success("目前沒有待繳帳單，太棒了！🎉")
 
 # ==========================================
 # 頁面 3: 管理信用卡 (Manage Cards)
