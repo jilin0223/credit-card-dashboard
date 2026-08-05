@@ -179,21 +179,27 @@ elif page == "📝 登記每月消費":
             today = datetime.now()
             
             for index, row in unpaid_list.iterrows():
-                # 1. 取得該卡片的設定繳款日
+                # 1. 取得該卡片的設定結帳日與繳款日 (新增結帳日讀取)
                 bank = row['銀行名稱']
                 card_info = cards_df[cards_df["銀行名稱"] == bank]
+                closing_day = card_info["結帳日"].values[0] if not card_info.empty else 1
                 due_day = card_info["繳款日"].values[0] if not card_info.empty else 15
                 
-                # 2. 計算實際繳款期限 (預設消費月份的「下個月」為繳款月)
+                # 2. 計算實際繳款期限 
                 bill_year = row['年份']
                 bill_month = row['月份']
                 
-                if bill_month == 12:
-                    due_year = bill_year + 1
-                    due_month = 1
-                else:
+                # 【修改處】判斷繳款月份：繳款日 > 結帳日 為同月繳款，否則為次月繳款
+                if due_day > closing_day:
                     due_year = bill_year
-                    due_month = bill_month + 1
+                    due_month = bill_month
+                else:
+                    if bill_month == 12:
+                        due_year = bill_year + 1
+                        due_month = 1
+                    else:
+                        due_year = bill_year
+                        due_month = bill_month + 1
                     
                 try:
                     # 防呆：確保繳款日不會超過該月的最後一天 (例如設定 31 號，但 4 月只有 30 天)
