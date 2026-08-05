@@ -32,6 +32,14 @@ st.sidebar.title("💳 系統選單")
 page = st.sidebar.radio("請選擇功能", ["📊 總覽面板與提醒", "📝 登記每月消費", "🏦 管理信用卡"])
 
 # ==========================================
+# 🌟 核心修復：跨頁面全域提示訊息攔截器
+# 確保 st.rerun() 重新整理後，訊息能穩定顯示
+# ==========================================
+if "success_msg" in st.session_state:
+    st.success(st.session_state["success_msg"])
+    del st.session_state["success_msg"]  # 顯示後就刪除，避免下次進來又看到
+
+# ==========================================
 # 頁面 1: 總覽面板與提醒 (Dashboard & Reminders)
 # ==========================================
 if page == "📊 總覽面板與提醒":
@@ -76,7 +84,7 @@ if page == "📊 總覽面板與提醒":
             card_stats = filtered_df.groupby("銀行名稱")["消費總額"].sum().round(0).astype(int).reset_index(name="金額")
             suffix = ""
             
-        # 優化排版：固定每行最多顯示 4 個數據卡片，避免過擠導致文字被截斷 (...)
+        # 優化排版：固定每行最多顯示 4 個數據卡片
         MAX_COLS_PER_ROW = 4
         # 將卡片資料分批，每批 4 個
         for i in range(0, len(card_stats), MAX_COLS_PER_ROW):
@@ -91,10 +99,8 @@ if page == "📊 總覽面板與提醒":
         # --- 花費趨勢圖 (圖表化) ---
         st.subheader("📈 信用卡花費趨勢圖")
         
-        # 將資料依據時間排序供圖表使用
         plot_df = spending_df.sort_values("月份(年-月)")
 
-        # 使用 Plotly 繪製互動式折線圖
         fig = px.line(
             plot_df, 
             x="月份(年-月)", 
@@ -104,21 +110,17 @@ if page == "📊 總覽面板與提醒":
             title="各銀行每月消費趨勢",
             labels={"消費總額": "金額 (TWD)", "月份(年-月)": "月份"}
         )
-        # 強制設定為白底，並加上淺灰色網格線輔助閱讀
         fig.update_layout(
             plot_bgcolor="white",       
             paper_bgcolor="white",      
             font=dict(color="black"),   
             hovermode="x unified"
         )
-        
-        # 確保 X 軸為文字類別，不會出現細微的時間刻度
         fig.update_xaxes(type="category", showgrid=True, gridwidth=1, gridcolor="#E5E5E5")
         fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor="#E5E5E5")
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # 顯示原始數據表格
         with st.expander("查看完整消費統計資料表"):
             st.dataframe(spending_df.drop(columns=["月份(年-月)"]).sort_values(by=["年份", "月份"], ascending=[False, False]), use_container_width=True)
     else:
@@ -152,7 +154,7 @@ elif page == "📝 登記每月消費":
                 if mask.any():
                     spending_df.loc[mask, "消費總額"] = amount
                     spending_df.loc[mask, "已繳款"] = is_paid
-                    st.toast(f"已更新 {bank} {year}年{month}月的紀錄！")
+                    st.session_state["success_msg"] = f"✅ 已更新：{bank} {year}年{month}月的消費紀錄！"
                 else:
                     new_record = pd.DataFrame([{
                         "年份": year, 
@@ -162,12 +164,12 @@ elif page == "📝 登記每月消費":
                         "已繳款": is_paid
                     }])
                     spending_df = pd.concat([spending_df, new_record], ignore_index=True)
-                    st.toast("新增紀錄成功！")
+                    st.session_state["success_msg"] = f"✅ 新增成功：{bank} {year}年{month}月的消費紀錄！"
                 
                 save_data(spending_df, SPENDING_FILE)
-                st.rerun()
+                st.rerun()  # 觸發重新整理，上方攔截器會秀出 success_msg
                 
-        # --- 2. 快速切換繳款狀態區塊 (含到期日標記) ---
+        # --- 2. 快速切換繳款狀態區塊 ---
         st.divider()
         st.subheader("💡 快速標記繳款狀態與到期提醒")
         
@@ -238,19 +240,18 @@ elif page == "📝 登記每月消費":
                         if "Ref已繳款" in spending_df.columns:
                             spending_df = spending_df.drop(columns=["Ref已繳款"])
                         save_data(spending_df, SPENDING_FILE)
+                        st.session_state["success_msg"] = f"✅ 已成功將 {bank} ({row['年份']}年{row['月份']}月) 標記為已繳款！"
                         st.rerun()
         else:
             st.success("目前沒有待繳帳單，太棒了！🎉")
             
-        # --- 3. 刪除消費紀錄區塊 (新增功能) ---
+        # --- 3. 刪除消費紀錄區塊 ---
         st.divider()
         st.subheader("🗑️ 管理與刪除消費紀錄")
         if not spending_df.empty:
-            # 建立選單選項字典，將顯示文字對應回 DataFrame 的 index
             delete_options = ["(不進行操作)"]
             delete_mapping = {}
             
-            # 將資料照時間反序排列，讓新的紀錄在選單最上方較好找
             sorted_spending = spending_df.sort_values(by=["年份", "月份"], ascending=[False, False])
             
             for idx, row in sorted_spending.iterrows():
@@ -264,12 +265,11 @@ elif page == "📝 登記每月消費":
                 idx_to_drop = delete_mapping[selected_delete]
                 spending_df = spending_df.drop(idx_to_drop)
                 
-                # 防呆機制：確保只存入最初定義的核心 5 個欄位，濾掉所有在程式運作中產生的暫存欄位
                 core_columns = ["年份", "月份", "銀行名稱", "消費總額", "已繳款"]
                 save_df = spending_df[core_columns]
                 
                 save_data(save_df, SPENDING_FILE)
-                st.success(f"已成功刪除：{selected_delete}")
+                st.session_state["success_msg"] = f"🗑️ 刪除成功：您已移除 {selected_delete} 的紀錄。"
                 st.rerun()
         else:
             st.info("目前沒有任何消費紀錄可供刪除。")
@@ -295,11 +295,11 @@ elif page == "🏦 管理信用卡":
         if submitted and bank_name:
             if bank_name in cards_df["銀行名稱"].values:
                 cards_df.loc[cards_df["銀行名稱"] == bank_name, ["結帳日", "繳款日"]] = [statement_day, due_day]
-                st.toast(f"已更新 {bank_name} 的資訊！")
+                st.session_state["success_msg"] = f"✅ 已更新：{bank_name} 的結帳與繳款日資訊！"
             else:
                 new_card = pd.DataFrame([{"銀行名稱": bank_name, "結帳日": statement_day, "繳款日": due_day}])
                 cards_df = pd.concat([cards_df, new_card], ignore_index=True)
-                st.toast(f"成功新增 {bank_name}！")
+                st.session_state["success_msg"] = f"✅ 新增成功：已將 {bank_name} 加入信用卡清單！"
             
             save_data(cards_df, CARDS_FILE)
             st.rerun()
@@ -313,7 +313,7 @@ elif page == "🏦 管理信用卡":
         if st.button("🗑️ 移除此信用卡") and delete_bank != "(不進行操作)":
             cards_df = cards_df[cards_df["銀行名稱"] != delete_bank]
             save_data(cards_df, CARDS_FILE)
-            st.success(f"已移除 {delete_bank}！")
+            st.session_state["success_msg"] = f"🗑️ 移除成功：已將 {delete_bank} 從清單中刪除。"
             st.rerun()
     else:
         st.info("目前尚未建立任何信用卡資訊。")
