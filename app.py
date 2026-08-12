@@ -2,28 +2,72 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
-import os
+import gspread
+from gspread_dataframe import set_with_dataframe
+from google.oauth2.service_account import Credentials
 
 # --- 頁面設定 ---
 st.set_page_config(page_title="信用卡帳單管理系統", page_icon="💳", layout="wide")
 
-# --- 資料檔案路徑 ---
-CARDS_FILE = "cards.csv"
-SPENDING_FILE = "spending.csv"
+# ==========================================
+# 🌟 雲端資料庫初始化 (Google Sheets 連線)
+# ==========================================
+@st.cache_resource
+def init_gsheets():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    # 讀取 Streamlit Secrets 中的憑證
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], 
+        scopes=scopes
+    )
+    client = gspread.authorize(creds)
+    # 讀取目標試算表網址
+    sheet = client.open_by_url(st.secrets["sheet_url"]["url"])
+    return sheet
 
-# --- 初始化與讀取資料 ---
 def load_data():
-    if not os.path.exists(CARDS_FILE):
-        pd.DataFrame(columns=["銀行名稱", "結帳日", "繳款日"]).to_csv(CARDS_FILE, index=False)
-    if not os.path.exists(SPENDING_FILE):
-        pd.DataFrame(columns=["年份", "月份", "銀行名稱", "消費總額", "已繳款"]).to_csv(SPENDING_FILE, index=False)
+    sheet = init_gsheets()
     
-    cards_df = pd.read_csv(CARDS_FILE)
-    spending_df = pd.read_csv(SPENDING_FILE)
+    # 讀取 Cards 工作表
+    try:
+        ws_cards = sheet.worksheet("cards")
+        cards_records = ws_cards.get_all_records()
+        if not cards_records:
+            cards_df = pd.DataFrame(columns=["銀行名稱", "結帳日", "繳款日"])
+        else:
+            cards_df = pd.DataFrame(cards_records)
+    except gspread.exceptions.WorksheetNotFound:
+        ws_cards = sheet.add_worksheet(title="cards", rows=100, cols=5)
+        cards_df = pd.DataFrame(columns=["銀行名稱", "結帳日", "繳款日"])
+        set_with_dataframe(ws_cards, cards_df)
+        
+    # 讀取 Spending 工作表
+    try:
+        ws_spending = sheet.worksheet("spending")
+        spending_records = ws_spending.get_all_records()
+        if not spending_records:
+            spending_df = pd.DataFrame(columns=["年份", "月份", "銀行名稱", "消費總額", "已繳款"])
+        else:
+            spending_df = pd.DataFrame(spending_records)
+            # 確保已繳款欄位型態正確
+            if "已繳款" in spending_df.columns:
+                # 處理從 Sheet 讀取回來可能是字串 "TRUE"/"FALSE" 或整數的問題
+                spending_df["已繳款"] = spending_df["已繳款"].apply(lambda x: True if str(x).upper() == 'TRUE' else False)
+    except gspread.exceptions.WorksheetNotFound:
+        ws_spending = sheet.add_worksheet(title="spending", rows=1000, cols=10)
+        spending_df = pd.DataFrame(columns=["年份", "月份", "銀行名稱", "消費總額", "已繳款"])
+        set_with_dataframe(ws_spending, spending_df)
+        
     return cards_df, spending_df
 
-def save_data(df, filename):
-    df.to_csv(filename, index=False)
+def save_data(df, tab_name):
+    sheet = init_gsheets()
+    ws = sheet.worksheet(tab_name)
+    ws.clear()  # 清空舊資料
+    set_with_dataframe(ws, df) # 寫入最新 DataFrame
 
 cards_df, spending_df = load_data()
 
@@ -33,11 +77,10 @@ page = st.sidebar.radio("請選擇功能", ["📊 總覽面板與提醒", "📝 
 
 # ==========================================
 # 🌟 核心修復：跨頁面全域提示訊息攔截器
-# 確保 st.rerun() 重新整理後，訊息能穩定顯示
 # ==========================================
 if "success_msg" in st.session_state:
     st.success(st.session_state["success_msg"])
-    del st.session_state["success_msg"]  # 顯示後就刪除，避免下次進來又看到
+    del st.session_state["success_msg"] 
 
 # ==========================================
 # 頁面 1: 總覽面板與提醒 (Dashboard & Reminders)
@@ -45,24 +88,16 @@ if "success_msg" in st.session_state:
 if page == "📊 總覽面板與提醒":
     st.title("📊 信用卡總覽面板")
     
-    # --- 繳款提醒區塊 ---
     st.subheader("🔔 繳款提醒")
     if not spending_df.empty:
-        # 建立月份字串欄位供後續統計與繪圖使用 (例如: 2024-01)
         spending_df["月份(年-月)"] = spending_df["年份"].astype(str) + "-" + spending_df["月份"].astype(str).str.zfill(2)
-        
-        # --- 數據統計摘要 ---
         st.subheader("📊 消費數據統計摘要")
         
-        # 取得所有可用月份並排序 (最新的在最上面)
         available_months = sorted(spending_df["月份(年-月)"].unique().tolist(), reverse=True)
-        
-        # 新增下拉選單，讓使用者選擇要看總計還是特定月份
         selected_period = st.selectbox("📅 選擇統計區間", ["歷史所有紀錄"] + available_months)
         
         st.divider()
         
-        # 根據選擇的區間過濾資料
         if selected_period == "歷史所有紀錄":
             filtered_df = spending_df
             total_spending = filtered_df["消費總額"].sum()
@@ -70,7 +105,6 @@ if page == "📊 總覽面板與提醒":
             st.metric(label="💰 歷史所有信用卡總花費", value=f"${total_spending:,} TWD")
             st.markdown("**💳 各信用卡歷史每月平均花費：**")
             
-            # 計算平均
             card_stats = filtered_df.groupby("銀行名稱")["消費總額"].mean().round(0).astype(int).reset_index(name="金額")
             suffix = " /月"
         else:
@@ -80,13 +114,10 @@ if page == "📊 總覽面板與提醒":
             st.metric(label=f"💰 {selected_period} 信用卡總花費", value=f"${total_spending:,} TWD")
             st.markdown(f"**💳 {selected_period} 各信用卡總花費：**")
             
-            # 計算該月總和
             card_stats = filtered_df.groupby("銀行名稱")["消費總額"].sum().round(0).astype(int).reset_index(name="金額")
             suffix = ""
             
-        # 優化排版：固定每行最多顯示 4 個數據卡片
         MAX_COLS_PER_ROW = 4
-        # 將卡片資料分批，每批 4 個
         for i in range(0, len(card_stats), MAX_COLS_PER_ROW):
             cols = st.columns(MAX_COLS_PER_ROW)
             chunk = card_stats.iloc[i:i+MAX_COLS_PER_ROW]
@@ -95,8 +126,6 @@ if page == "📊 總覽面板與提醒":
                     st.metric(label=row['銀行名稱'], value=f"${row['金額']:,}{suffix}")
                 
         st.divider()
-
-        # --- 花費趨勢圖 (圖表化) ---
         st.subheader("📈 信用卡花費趨勢圖")
         
         plot_df = spending_df.sort_values("月份(年-月)")
@@ -136,7 +165,6 @@ elif page == "📝 登記每月消費":
     if cards_df.empty:
         st.error("請先至「管理信用卡」新增發卡銀行，才能登記消費！")
     else:
-        # --- 1. 新增或更新紀錄 ---
         with st.form("add_spending_form"):
             col1, col2 = st.columns(2)
             with col1:
@@ -166,10 +194,10 @@ elif page == "📝 登記每月消費":
                     spending_df = pd.concat([spending_df, new_record], ignore_index=True)
                     st.session_state["success_msg"] = f"✅ 新增成功：{bank} {year}年{month}月的消費紀錄！"
                 
-                save_data(spending_df, SPENDING_FILE)
-                st.rerun()  # 觸發重新整理，上方攔截器會秀出 success_msg
+                # 存入名稱為 "spending" 的工作表
+                save_data(spending_df, "spending")
+                st.rerun() 
                 
-        # --- 2. 快速切換繳款狀態區塊 ---
         st.divider()
         st.subheader("💡 快速標記繳款狀態與到期提醒")
         
@@ -203,7 +231,6 @@ elif page == "📝 登記每月消費":
                 try:
                     max_day_of_month = calendar.monthrange(due_year, due_month)[1]
                     actual_due_day = min(due_day, max_day_of_month)
-                    
                     due_date = datetime(due_year, due_month, actual_due_day)
                     days_left = (due_date - today).days
                     
@@ -219,7 +246,6 @@ elif page == "📝 登記每月消費":
                         status_emoji = "✅"
                         status_text = f" (距離繳款還有 {days_left} 天)"
                         text_color = "#00CC66"
-                        
                 except Exception:
                     status_emoji = "📅"
                     status_text = f" (建議繳款日: {due_day}日)"
@@ -239,13 +265,12 @@ elif page == "📝 登記每月消費":
                         spending_df.at[index, "已繳款"] = True
                         if "Ref已繳款" in spending_df.columns:
                             spending_df = spending_df.drop(columns=["Ref已繳款"])
-                        save_data(spending_df, SPENDING_FILE)
+                        save_data(spending_df, "spending")
                         st.session_state["success_msg"] = f"✅ 已成功將 {bank} ({row['年份']}年{row['月份']}月) 標記為已繳款！"
                         st.rerun()
         else:
             st.success("目前沒有待繳帳單，太棒了！🎉")
             
-        # --- 3. 刪除消費紀錄區塊 ---
         st.divider()
         st.subheader("🗑️ 管理與刪除消費紀錄")
         if not spending_df.empty:
@@ -268,7 +293,7 @@ elif page == "📝 登記每月消費":
                 core_columns = ["年份", "月份", "銀行名稱", "消費總額", "已繳款"]
                 save_df = spending_df[core_columns]
                 
-                save_data(save_df, SPENDING_FILE)
+                save_data(save_df, "spending")
                 st.session_state["success_msg"] = f"🗑️ 刪除成功：您已移除 {selected_delete} 的紀錄。"
                 st.rerun()
         else:
@@ -301,7 +326,8 @@ elif page == "🏦 管理信用卡":
                 cards_df = pd.concat([cards_df, new_card], ignore_index=True)
                 st.session_state["success_msg"] = f"✅ 新增成功：已將 {bank_name} 加入信用卡清單！"
             
-            save_data(cards_df, CARDS_FILE)
+            # 存入名稱為 "cards" 的工作表
+            save_data(cards_df, "cards")
             st.rerun()
 
     st.divider()
@@ -312,7 +338,7 @@ elif page == "🏦 管理信用卡":
         delete_bank = st.selectbox("選擇要移除的信用卡", ["(不進行操作)"] + cards_df["銀行名稱"].tolist())
         if st.button("🗑️ 移除此信用卡") and delete_bank != "(不進行操作)":
             cards_df = cards_df[cards_df["銀行名稱"] != delete_bank]
-            save_data(cards_df, CARDS_FILE)
+            save_data(cards_df, "cards")
             st.session_state["success_msg"] = f"🗑️ 移除成功：已將 {delete_bank} 從清單中刪除。"
             st.rerun()
     else:
