@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, date
 import gspread
 from gspread_dataframe import set_with_dataframe
 from google.oauth2.service_account import Credentials
@@ -54,7 +54,6 @@ def load_data():
             spending_df = pd.DataFrame(spending_records)
             # 確保已繳款欄位型態正確
             if "已繳款" in spending_df.columns:
-                # 處理從 Sheet 讀取回來可能是字串 "TRUE"/"FALSE" 或整數的問題
                 spending_df["已繳款"] = spending_df["已繳款"].apply(lambda x: True if str(x).upper() == 'TRUE' else False)
     except gspread.exceptions.WorksheetNotFound:
         ws_spending = sheet.add_worksheet(title="spending", rows=1000, cols=10)
@@ -194,7 +193,6 @@ elif page == "📝 登記每月消費":
                     spending_df = pd.concat([spending_df, new_record], ignore_index=True)
                     st.session_state["success_msg"] = f"✅ 新增成功：{bank} {year}年{month}月的消費紀錄！"
                 
-                # 存入名稱為 "spending" 的工作表
                 save_data(spending_df, "spending")
                 st.rerun() 
                 
@@ -206,7 +204,8 @@ elif page == "📝 登記每月消費":
         
         if not unpaid_list.empty:
             import calendar
-            today = datetime.now()
+            # 🌟 【修正處】只取今天的「日期 (date)」，排除時分秒干擾
+            today = datetime.now().date()
             
             for index, row in unpaid_list.iterrows():
                 bank = row['銀行名稱']
@@ -231,14 +230,21 @@ elif page == "📝 登記每月消費":
                 try:
                     max_day_of_month = calendar.monthrange(due_year, due_month)[1]
                     actual_due_day = min(due_day, max_day_of_month)
-                    due_date = datetime(due_year, due_month, actual_due_day)
+                    
+                    # 🌟 【修正處】確保 due_date 也是純日期，這樣相減才會是精準的 0 天
+                    due_date = datetime(due_year, due_month, actual_due_day).date()
                     days_left = (due_date - today).days
                     
+                    # 🌟 【修正處】新增「今天到期 (days_left == 0)」的專屬提醒邏輯
                     if days_left < 0:
                         status_emoji = "🚨"
                         status_text = f"【已逾期 {abs(days_left)} 天】"
                         text_color = "#FF4B4B"
-                    elif 0 <= days_left <= 7:
+                    elif days_left == 0:
+                        status_emoji = "🔥"
+                        status_text = f"【今天到期！請盡速繳款】"
+                        text_color = "#FF0000"
+                    elif 0 < days_left <= 7:
                         status_emoji = "⚠️"
                         status_text = f"【即將到期：剩 {days_left} 天】"
                         text_color = "#FFA500"
@@ -326,7 +332,6 @@ elif page == "🏦 管理信用卡":
                 cards_df = pd.concat([cards_df, new_card], ignore_index=True)
                 st.session_state["success_msg"] = f"✅ 新增成功：已將 {bank_name} 加入信用卡清單！"
             
-            # 存入名稱為 "cards" 的工作表
             save_data(cards_df, "cards")
             st.rerun()
 
